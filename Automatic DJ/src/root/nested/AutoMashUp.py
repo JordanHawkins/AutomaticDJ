@@ -14,6 +14,7 @@ import numpy.matlib as matlib
 import sys
 import matplotlib.pyplot as pyplot
 
+programFiles = ['__init__.py','Main.py','AutoMashUp.py','LocalAudioFiles.pkl','filenames.pkl']
 workingDirectory = '/Users/jordanhawkins/Documents/workspace/Automatic DJ/src/root/nested'
 lib = plistlib.readPlist('/Users/jordanhawkins/Music/iTunes/iTunes Music Library.xml')
 LOUDNESS_THRESH = -8 # per capsule_support module
@@ -36,6 +37,8 @@ def getAudioFiles():
                 except:
                     print "exception in getAudioFiles         "
             break
+
+make sure you dont delete program files!
 
 def getInput():
     filenames = []
@@ -65,10 +68,9 @@ def deleteOldSongs(filenames):
             os.remove(filename)
 
 def matchTempoAndKey(localAudioFiles, tempos):
-    ratio = (tempos[1]-tempos[0])/tempos[0]
-    mod = modify.Modify(sampleRate=44100, numChannels=1, blockSize=10000)
+    mod = modify.Modify()
     print "before mod1"
-    modify.Modify.shiftTempo(mod, localAudioFiles[0],ratio)
+    localAudioFiles[0] = mod.shiftTempo(localAudioFiles[0],tempos[1]/tempos[0])
     print "after mod"
     return localAudioFiles
 
@@ -78,7 +80,6 @@ def main():
     localAudioFiles, filenames, tempos = getInput()
     equalize_tracks(localAudioFiles)
     localAudioFiles = matchTempoAndKey(localAudioFiles, tempos)
-    align()
     deleteOldSongs(filenames)
     os.system('automator /Users/jordanhawkins/Documents/workspace/Automatic\ DJ/import.workflow/')      
     
