@@ -8,6 +8,7 @@ import echonest.audio as audio
 import echonest.action as action
 import echonest.selection as selection
 import os
+import sys
 import plistlib
 import shutil
 import urllib
@@ -25,7 +26,7 @@ BAR_CONFIDENCE = .8
 LOUDNESS_THRESH = -8 # per capsule_support module
 WINDOW_LENGTH_MEAN = 81 # default length of windows for finding mean loudness regions
 WINDOW_LENGTH_STD = 9 # default length of windows for finding standard deviations that demarcate song sections
-
+MIX_LENGTH = 5 # defines the length, in beats, of fades between songs
 """
 Remove any old audio files from the project directory.
 """
@@ -52,7 +53,7 @@ def getAudioFiles():
             break
 
 
-def findLoudestRegion(segments,tempos):
+def oldfindLoudestRegion(segments,tempos):
     segmentMarkers = []
     for segs,tempo in zip(segments,tempos):
         w128 = int((128.0/tempo)*60.0/(matlib.mean(matlib.array(segs.durations))))
@@ -106,74 +107,75 @@ def findLoudestRegion(segments,tempos):
             print "mean loudness of 32 beat region is: ", lpf32[loc32]
             print "min 4 beat mean loudness in the 64 beat region is: ", min(lpf4[(loc32-w16):(loc32+w16)])
             loc = loc32-w16,loc32+w16
+        loc = loc128-w64,loc128+w64 #this is to try...
         segmentMarkers.append(loc)
     return segmentMarkers
-                
-                
- 
+    
+"""
+Find the longest consistently loud region of the song.
+window is the approximate number of segments in a 16 beat span.
+lpf is a 16-beat-long rectangular window convolved with the loudness values to smoothen them.
+the while loop tries to find a loud region of the song that's at least 60 seconds long. If such a region cannot
+    be found the first time, the LOUDNESS_FLOOR value is increased to tolerate slightly softer loud regions for
+    the sake of a longer song duration.
+*To better understand the mathematics involved, note that loudness is measured in negative decibels, 
+    so a small negative number is louder than a large negative number.
+"""
+def findLoudestRegion(segments,tempos):
+    segmentMarkers = []
+    for segs,tempo in zip(segments,tempos):
+        LOUDNESS_CEILING = .8
+        LOUDNESS_FLOOR = 1.2
+        window = int((16.0/tempo)*60.0/(matlib.mean(matlib.array(segs.durations))))
+        lpf = np.convolve(segs.loudness_max,np.ones(window)/window)[window/2:-(window/2)]
+        lpf[0:window/2] = lpf[window/2]
+        lpf[-(window/2):] = lpf[-(window/2)]
+        mean = matlib.mean(matlib.array(lpf))
+        marker1 = 0
+        finalMarkers = (0,0)
+        foundFirstMarker = 0
+        while((sum([s.duration for s in segs[finalMarkers[0]:finalMarkers[1]]]) < 60.0) and LOUDNESS_FLOOR < 2.0):
+            for i,l in enumerate(lpf):
+                if(foundFirstMarker):
+                    if l < mean*LOUDNESS_FLOOR or i == len(lpf)-1:
+                        foundFirstMarker = 0
+                        if((i-marker1) > (finalMarkers[1]-finalMarkers[0])):
+                            finalMarkers = (marker1,i)                         
+                elif l > mean*LOUDNESS_CEILING: 
+                    foundFirstMarker = 1
+                    marker1 = i
+            # lower the loudness floor and ceiling to allow for a longer region to be chosen, if necessary
+            LOUDNESS_FLOOR = LOUDNESS_FLOOR + .05
+            LOUDNESS_CEILING = LOUDNESS_CEILING + .05
+        segmentMarkers.append(finalMarkers)
+    return segmentMarkers         
+    
+"""
+This method was used during development to visualize the data.
+timeMarkers contains a tuple of start and end values (in seconds) for each song in my training set.
+"""            
 def generateSegmentGraphs(segments, filenames, segmentMarkers, tempos):
+    # training set timeMarkers = [(26.516,131.312),(4.746,172.450),(41.044,201.012),(82.312,175.997),(15.370,46.003),(122.042,213.469),(30.887,122.294),(0.000,272.304),(37.785,195.357),(15.230,195.357),(37.539,172.498),(67.721,157.716),(37.282,125.899),(147.876,325.127),(14.775,192.008),(213.437,298.800),(29.553,86.022),(238.297,294.371),(21.150,193.356),(41.625,138.350)]
+    timeMarkers = [(4.0,141.0),(25.0,177.0),(17.0,188.0),(16.0,129.0),(17.0,177.0),(15.0,136.0),(87.0,149.0),(98.0,173.0),(106.0,212.0),(0.0,104.0)]
+    myMarkers = [(j.index(min(j.that(selection.start_during_range(i[0], i[0]+1.0)))),j.index(min(j.that(selection.start_during_range(i[1], i[1]+10.0))))) for j,i in zip(segments,timeMarkers)]    
     for i in range(len(segments)):
         pyplot.figure(i,(16,9))
-        def printLoudnessStats():
-            print filenames[i]
-            print "mean loudness of song: ", matlib.mean(matlib.array([h.loudness_max for h in segments[i]]))
-            print "mean loudness of designated region: ", matlib.mean(matlib.array([h.loudness_max for h in segments[i][segmentMarkers[i][0]:segmentMarkers[i][1]]]))
-            print "region/song mean loudness ratio: ", matlib.mean(matlib.array([h.loudness_max for h in segments[i][segmentMarkers[i][0]:segmentMarkers[i][1]]]))/matlib.mean(matlib.array([h.loudness_max for h in segments[i]]))
-            print "standard deviation of song: ", matlib.std(matlib.array([h.loudness_max for h in segments[i]]))
-            print "standard deviation of designated region: ", matlib.std(matlib.array([h.loudness_max for h in segments[i][segmentMarkers[i][0]:segmentMarkers[i][1]]]))
-            print "region/song std loudness ratio: ", matlib.std(matlib.array([h.loudness_max for h in segments[i][segmentMarkers[i][0]:segmentMarkers[i][1]]]))/matlib.std(matlib.array([h.loudness_max for h in segments[i]]))
-            print " "
-        # window through all segment loudness values to find loudest region...
-        windowLen1 = int((4.0/tempos[i])*60.0/(matlib.mean(matlib.array(segments[i].durations))))
-        windowLen2 = int((8.0/tempos[i])*60.0/(matlib.mean(matlib.array(segments[i].durations))))
         windowLen3 = int((16.0/tempos[i])*60.0/(matlib.mean(matlib.array(segments[i].durations))))
-        windowLen4 = int((32.0/tempos[i])*60.0/(matlib.mean(matlib.array(segments[i].durations))))
-        windowLen5 = int((64.0/tempos[i])*60.0/(matlib.mean(matlib.array(segments[i].durations))))
-        windowLen6 = int((128.0/tempos[i])*60.0/(matlib.mean(matlib.array(segments[i].durations))))
-        #lpf = signal.filtfilt(np.ones(windowLen)/windowLen,np.ones(windowLen),segments[i].loudness_max)
-        lpf1 = signal.lfilter(np.ones(windowLen1)/windowLen1,1,segments[i].loudness_max) + signal.lfilter(np.ones(windowLen1)/windowLen1,1,segments[i].loudness_max[::-1])[::-1]
-        std1 = [matlib.std(matlib.array([segments[i][k+p].loudness_max for p in range(windowLen1)])) for k in range(len(segments[i])-windowLen1)]
-        lpf2 = signal.lfilter(np.ones(windowLen2)/windowLen2,1,segments[i].loudness_max) + signal.lfilter(np.ones(windowLen2)/windowLen2,1,segments[i].loudness_max[::-1])[::-1]
         lpf3 = signal.lfilter(np.ones(windowLen3)/windowLen3,1,segments[i].loudness_max) + signal.lfilter(np.ones(windowLen3)/windowLen3,1,segments[i].loudness_max[::-1])[::-1]
-        lpf4 = signal.lfilter(np.ones(windowLen4)/windowLen4,1,segments[i].loudness_max) + signal.lfilter(np.ones(windowLen4)/windowLen4,1,segments[i].loudness_max[::-1])[::-1]
-        lpf5 = signal.lfilter(np.ones(windowLen5)/windowLen5,1,segments[i].loudness_max) + signal.lfilter(np.ones(windowLen5)/windowLen5,1,segments[i].loudness_max[::-1])[::-1]
-        lpf6 = signal.lfilter(np.ones(windowLen6)/windowLen6,1,segments[i].loudness_max) + signal.lfilter(np.ones(windowLen6)/windowLen6,1,segments[i].loudness_max[::-1])[::-1]
-        WINDOW_LENGTH_MEAN = int((32.0/tempos[i])*60.0/(matlib.mean(matlib.array(segments[i].durations))))
-        WINDOW_LENGTH_STD = int((8.0/tempos[i])*60.0/(matlib.mean(matlib.array(segments[i].durations))))
-        stdev = [matlib.std(matlib.array([segments[i][k+p].loudness_max for p in range(WINDOW_LENGTH_STD)])) for k in range(len(segments[i])-WINDOW_LENGTH_STD)]
-        means = [matlib.mean(matlib.array([segments[i][k+p].loudness_max for p in range(WINDOW_LENGTH_MEAN)])) for k in range(len(segments[i])-WINDOW_LENGTH_MEAN)]
-        # piecewise multiply means and standard deviations to find segment marker with greatest magnitude
-        combined = [sd*mean for sd,mean in zip(stdev,means)]
-        pyplot.plot(segments[i].loudness_max)
-        pyplot.plot(lpf1-10)
-        pyplot.plot([std-10 for std in std1])
-        #pyplot.plot([lpf-10 for lpf in lpf12])
-        pyplot.plot(lpf2-15)
-        pyplot.plot(lpf3-20)
-        pyplot.plot(lpf4-25)
-        lpf5[:63] = min(lpf5)
-        lpf5[:-65:-1] = min(lpf5)
-        pyplot.plot(lpf5-30)
-        lpf6[:123] = min(lpf6)
-        lpf6[:-125:-1] = min(lpf6)
-        pyplot.plot(lpf6-35)
+        lpf3 = np.convolve(segments[i].loudness_max,np.ones(windowLen3)/windowLen3)[windowLen3/2:-(windowLen3/2)]
+        lpf3[0:windowLen3/2] = lpf3[windowLen3/2]
+        lpf3[-(windowLen3/2):] = lpf3[-(windowLen3/2)]
+        pyplot.plot(lpf3)
         pyplot.xlabel('Segment Number')
         pyplot.ylabel('Loudness (dB)')
-        """
-        pyplot.vlines(means.index(max(means)), min(segments[i].loudness_max), max(segments[i].loudness_max), 'r')
-        pyplot.vlines(means.index(max(means))+WINDOW_LENGTH_MEAN, min(segments[i].loudness_max), max(segments[i].loudness_max), 'r')
-        pyplot.vlines(stdev.index(max(stdev)), min(segments[i].loudness_max), max(segments[i].loudness_max), 'b')
-        pyplot.vlines(stdev.index(max(stdev))+WINDOW_LENGTH_STD, min(segments[i].loudness_max), max(segments[i].loudness_max), 'b')
-        pyplot.vlines(combined.index(max(combined)), min(segments[i].loudness_max), max(segments[i].loudness_max), 'g')
-        """
-        #pyplot.vlines(lpf5.argmax(),min(lpf5)-30,max(segments[i].loudness_max))
-        #pyplot.vlines(lpf5.argmax()-windowLen5/2,min(lpf5)-30,max(segments[i].loudness_max))
-        #pyplot.vlines(lpf5.argmax()+windowLen5/2,min(lpf5)-30,max(segments[i].loudness_max))
-        pyplot.vlines(segmentMarkers[i][0], min(lpf5)-30, max(segments[i].loudness_max))
-        pyplot.vlines(segmentMarkers[i][1], min(lpf5)-30, max(segments[i].loudness_max))
-        print "filename: ", filenames[i]
-        print "total duration: ", action.humanize_time(sum(segments[i].durations))
-        print "start location: ", action.humanize_time(segments[i][combined.index(max(combined))].start)
+        pyplot.vlines(segmentMarkers[i][0], min(lpf3), max(segments[i].loudness_max), 'g')
+        pyplot.vlines(segmentMarkers[i][1], min(lpf3), max(segments[i].loudness_max), 'g')
+        pyplot.vlines(myMarkers[i][0], min(lpf3), max(segments[i].loudness_max), 'r')
+        pyplot.vlines(myMarkers[i][1], min(lpf3), max(segments[i].loudness_max), 'r')
+        pyplot.legend(["Loudness", "Autmatically selected start time: " + str(action.humanize_time(segments[i][segmentMarkers[i][0]].start)), 
+                            "Automatically selected end time: " + str(action.humanize_time(segments[i][segmentMarkers[i][1]].start)),
+                            "Manually selected start time: " + str(action.humanize_time(timeMarkers[i][0])),
+                            "Manually selected end time: " + str(action.humanize_time(timeMarkers[i][1]))])
         pyplot.title(filenames[i])    
     pyplot.show()
 
@@ -188,41 +190,64 @@ def getInput():
         if programFiles.count(filename) == 0:
             filenames.append(filename)  
     inputList = []
-    for i in range(len(filenames)):
-        audiofile = audio.LocalAudioFile(filenames[i])
-        inputList.append((audiofile.analysis.tempo['value'], audiofile, filenames[i]))
+    for filename in filenames:
+        try:
+            inputList.append((audio.LocalAudioFile(filename).analysis.tempo['value'],audio.LocalAudioFile(filename),filename))
+        except: print "Exception in getInput for filename: ", filename
     inputList.sort()
     localAudioFiles = [t[1] for t in inputList]
-    filenames = [t[2] for t in inputList]
-    return [f.analysis.segments for f in localAudioFiles], filenames, [f.analysis.tempo['value'] for f in localAudioFiles],[f.analysis.beats.that(selection.fall_on_the(1)) for f in localAudioFiles], localAudioFiles, [f.analysis.beats for f in localAudioFiles]
- 
-def equalize_tracks(tracks):   # copied from capsule_support module 
+    return [f.analysis.segments for f in localAudioFiles], [t[2] for t in inputList], [f.analysis.tempo['value'] for f in localAudioFiles], localAudioFiles, [f.analysis.beats for f in localAudioFiles]
+"""
+I copied this method from capsule_support. It equalizes the volume of the input tracks.
+"""
+def equalize_tracks(tracks):
     def db_2_volume(loudness):
         return (1.0 - LOUDNESS_THRESH * (LOUDNESS_THRESH - loudness) / 100.0)   
     for track in tracks:
         loudness = track.analysis.loudness
         track.gain = db_2_volume(loudness)
-   
+
+"""
+This method deletes the original input songs from the directory so they don't get copied into iTunes.
+"""   
 def deleteOldSongs(filenames):
     for filename in os.listdir(workingDirectory):
         if filename in filenames:
             os.remove(filename)
             
-def generateCrossmatch(localAudioFiles, beatMarkers, filenames):
-    actions = [action.Crossmatch((localAudioFiles[i], localAudioFiles[i+1]), ([(b.start, b.duration) for b in beatMarkers[i][1].group()],[(b.start, b.duration) for b in beatMarkers[i+1][0].group()])) for i in range(len(beatMarkers)-1)]
-    #actions = [action.Crossmatch((localAudioFiles[i], localAudioFiles[i+1]), ([(t.start, t.duration) for t in segments[i][-1].group()],[(t.start, t.duration) for t in segments[i+1][0].group()])) for i in range(len(segments)-1)]
+"""
+This method generates 4-beat Crossmatch objects, then renders them attached to the end of Playback objects.
+"""
+def generateCrossmatch(localAudioFiles, beatMarkers, filenames, beats):
+    actions = []
+    for i in range(len(beatMarkers)-1): 
+        #try:
+        cm = action.Crossmatch((localAudioFiles[i], localAudioFiles[i+1]), ([(b.start, b.duration) for b in beats[i][beatMarkers[i][1]- MIX_LENGTH:beatMarkers[i][1]]],[(b.start, b.duration) for b in beats[i+1][beatMarkers[i+1][0]:beatMarkers[i+1][0]+MIX_LENGTH]]))
+        actions.append(cm)
+        #except: 
+            #print "exception at: ", filenames[i]
     for i in range(len(beatMarkers)): 
-        beats = localAudioFiles[i].analysis.beats
-        startBeat = beats[beats.index(beatMarkers[i][0])+4]
-        endBeat = beats[beats.index(beatMarkers[i][1])-4]
-        actions.insert(2*i, action.Playback(localAudioFiles[i], startBeat.start, endBeat.start-startBeat.start ))
+        startBeat = beats[i][beatMarkers[i][0]+MIX_LENGTH]
+        endBeat = beats[i][beatMarkers[i][1]-MIX_LENGTH]
+        actions.insert(2*i, action.Playback(localAudioFiles[i], startBeat.start, endBeat.start-startBeat.start))
+    action.render([action.Fadein(localAudioFiles[0],beats[0][beatMarkers[0][0]].start,beats[0][beatMarkers[0][0]+MIX_LENGTH].start-beats[0][beatMarkers[0][0]].start)],"000 fade in")
     for i in range(len(actions)/2):
+        index = str(i+1)
+        while(len(index) < 3): index = "0" + index
         try:
-            action.render([actions[2*i],actions[2*i+1]], str(i) + " " + filenames[i])
+            action.render([actions[2*i],actions[2*i+1]], index + " " + filenames[i])
         except: print filenames[i]                        
-    action.render([actions[-1]], str(len(filenames)-1) + " " + filenames[-1])
+    index = str(len(filenames))
+    while(len(index) < 3): index = "0" + index
+    action.render([actions[-1]], index + " " + filenames[-1])
+    action.render([action.Fadeout(localAudioFiles[-1],beats[-1][beatMarkers[-1][1]-MIX_LENGTH].start,beats[-1][beatMarkers[-1][1]].start-beats[-1][beatMarkers[-1][1]-MIX_LENGTH].start)], "999 fade out")
 
-def getBeatMarkers(loudnessMarkers,segments,ones,beats):
+"""
+This method finds the closest beat to my designated segments for Crossmatching.
+I had some trouble with this method, which is why it is so fragmented. I may resolve
+this later.
+"""
+def oldGetBeatMarkers(loudnessMarkers,segments,ones,beats):
     loudnessMarkers = [(segment[marker[0]].start,segment[marker[1]].start) for segment,marker in zip(segments,loudnessMarkers)]
     starts = [[abs(o.start - lm[0]) for o in beat] for beat,lm in zip(ones,loudnessMarkers)]
     ends = [[abs(o.start - lm[1]) for o in beat] for beat,lm in zip(ones,loudnessMarkers)]
@@ -233,22 +258,37 @@ def getBeatMarkers(loudnessMarkers,segments,ones,beats):
     closestStarts = [beat[s] for beat,s in zip(ones,startIndices)]
     closestEnds = [beat[e] for beat,e in zip(ones,endIndices)]
     return [(cs,ce) for cs,ce in zip(closestStarts,closestEnds)]
-       
-def generateHipHopSlam(localAudioFiles, beatMarkers, filenames):
+    
+def getBeatMarkers(loudnessMarkers,segments,beats):
+    return [(b.index(b.that(selection.overlap(segments[i][loudnessMarkers[i][0]]))[0]),b.index(b.that(selection.overlap(segments[i][loudnessMarkers[i][1]]))[0]))
+            for i,b in enumerate(beats)]
+        
+"""
+This method probably won't be used as much as Crossmatch.
+It immediately transitions between songs, without any kind of mix.
+"""   
+def generateFaderSlam(localAudioFiles, beatMarkers, filenames):
     actions = [action.Playback(laf, b[0].start, (b[1].start-b[0].start)) for laf,b in zip(localAudioFiles,beatMarkers)]
     for i in range(len(actions)): 
         action.render([actions[i]],str(i) + " " + filenames[i])
          
-def main(): 
+def main():
+    """
+    segments = cPickle.load(open('valSegs.pkl'))
+    tempos = cPickle.load(open('valTempos.pkl'))
+    filenames = cPickle.load(open('valNames.pkl'))
+    localAudioFiles = cPickle.load(open('valLocalAudioFiles.pkl'))
+    beats = [l.analysis.beats for l in localAudioFiles]
+    """
     flushDirectory()
     getAudioFiles()
-    segments, filenames, tempos, ones, localAudioFiles, beats = getInput()
+    segments, filenames, tempos, localAudioFiles, beats = getInput()
     equalize_tracks(localAudioFiles)
     loudnessMarkers = findLoudestRegion(segments,tempos)
-    beatMarkers = getBeatMarkers(loudnessMarkers,segments,ones,beats)
-    generateSegmentGraphs(segments,filenames,loudnessMarkers,tempos)
-    #generateHipHopSlam(localAudioFiles,beatMarkers,filenames)
-    generateCrossmatch(localAudioFiles,beatMarkers,filenames)
+    beatMarkers = getBeatMarkers(loudnessMarkers,segments,beats)
+    #generateSegmentGraphs(segments,filenames,loudnessMarkers,tempos)
+    #generateFaderSlam(localAudioFiles,beatMarkers,filenames)
+    generateCrossmatch(localAudioFiles,beatMarkers,filenames,beats)
     deleteOldSongs(filenames)
     os.system('automator /Users/jordanhawkins/Documents/workspace/Automatic\ DJ/import.workflow/')      
     
