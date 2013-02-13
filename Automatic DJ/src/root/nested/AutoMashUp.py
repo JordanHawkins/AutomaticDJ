@@ -7,6 +7,7 @@ Created on Oct 15, 2012
 import echonest.audio as audio
 import echonest.modify as modify
 import echonest.selection as selection
+import echonest.action as action
 import os
 import plistlib
 import shutil
@@ -26,7 +27,7 @@ import skimage.feature as feature
 programFiles = ['__init__.py','Main.py','AutoMashUp.py','LocalAudioFiles.pkl','filenames.pkl', 'segments.pkl', 
                 'tempos.pkl', 'valNames.pkl', 'valSegs.pkl', 'valTempos.pkl', 'valBeats.pkl', 'valLocalAudioFiles.pkl',
                 'AmuLafs.pkl', "AmuFilenames.pkl", "AmuPitches.pkl", "AmuKeys.pkl", 'AmuInstPitches.pkl', 
-                'AmuInstTimbre.pkl', 'AmuInstLoudness.pkl', 'AmuInstSections.pkl', 'AmuInstSimMats.pkl']
+                'AmuInstTimbre.pkl', 'AmuInstLoudness.pkl', 'AmuInstSections.pkl', 'AmuInstSimMats.pkl', 'Just_Dance.pkl']
 workingDirectory = '/Users/jordanhawkins/Documents/workspace/Automatic DJ/src/root/nested'
 lib = plistlib.readPlist('/Users/jordanhawkins/Music/iTunes/iTunes Music Library.xml')
 LOUDNESS_THRESH = -8 # per capsule_support module
@@ -125,15 +126,16 @@ def meanTimbre(segments):
     return mean_timbre 
 
 def matchTempoAndKey(localAudioFiles, tempos, keys):
-    mod = modify.Modify()
-    keys = keys[0:len(keys)/2]
-    tempos = tempos[0:len(tempos)/2]
+    keys[2] = keys[0]
+    keys[3] = keys[1]
+    tempos[2] = tempos[0]
+    tempos[3] = tempos[1]
     print "tempos: ", tempos
     midTempo = (max(tempos) + min(tempos))/2.0
     print "midTempo: ", midTempo
     midTempo = round(midTempo)
     print "rounded midTempo: ", midTempo
-    localAudioFiles = localAudioFiles[len(localAudioFiles)/2:]
+    mod = modify.Modify()
     out = [mod.shiftTempo(laf, midTempo/tempo) for laf,tempo in zip(localAudioFiles,tempos)]
     if max(keys)-min(keys) > 6:
         midKey = (((12 - max(keys) + min(keys))/2) + max(keys)) % 12 # there are 12 chroma values
@@ -146,9 +148,10 @@ def matchTempoAndKey(localAudioFiles, tempos, keys):
             out[i] = mod.shiftPitchSemiTones(out[i],midKey-keys[i])
     print "midTempo: ", midTempo
     print "midKey: ", midKey
-    #lafs = [mod.shiftTempo(laf,midTempo/tempo) for laf,tempo in zip(localAudioFiles, tempos)]
-    #lafs = [mod.shiftPitchSemiTones(laf,midKey-key) for laf,key in zip(lafs, keys)]
-    return out
+    out[0].encode('0.mp3')
+    out[1].encode('1.mp3')
+    out[2].encode('2.mp3')
+    out[3].encode('3.mp3')
 
 """
 Calculates a matrix of correlation values between
@@ -353,20 +356,29 @@ def pickleAnalysisData(localAudioFiles):
     
 def processImages():
     sims = cPickle.load(open('AmuInstSimMats.pkl'))
-    for sim in sims:
+    for i,sim in enumerate(sims):
         pyplot.figure(0,(16,9))
         pyplot.imshow(sim, vmin = 0, vmax = 1, cmap = pyplot.get_cmap('gray'), aspect = 'auto', origin = 'lower')
+        pyplot.title('Unfiltered Sim Matrix ' + str(i))
+        pyplot.savefig('Unfiltered Sim Matrix ' + str(i) + '.jpg')
         pyplot.figure(1,(16,9))
-        pyplot.imshow(filter.tv_denoise(numpy.array(sim,numpy.float64)), vmin = 0, vmax = 1, cmap = pyplot.get_cmap('gray'), aspect = 'auto', origin = 'lower')
+        pyplot.imshow(filter.tv_denoise(numpy.array(sim,numpy.float64), weight = 1), vmin = 0, vmax = 1, cmap = pyplot.get_cmap('gray'), aspect = 'auto', origin = 'lower')
+        pyplot.title('TV_Denoise ' + str(i))
+        pyplot.savefig('TV_Denoise ' + str(i) + '.jpg')
         pyplot.figure(2,(16,9))
         pyplot.imshow(filter.threshold_adaptive(numpy.array(sim,numpy.float64),21), vmin = 0, vmax = 1, cmap = pyplot.get_cmap('gray'), aspect = 'auto', origin = 'lower')
+        pyplot.title('Threshold_Adaptive ' + str(i))
+        pyplot.savefig('Threshold_Adaptive ' + str(i) + '.jpg')
         pyplot.figure(3,(16,9))
         pyplot.imshow(ndimage.minimum_filter(numpy.array(sim,numpy.float64),size=2), vmin = 0, vmax = 1, cmap = pyplot.get_cmap('gray'), aspect = 'auto', origin = 'lower')
+        pyplot.title('Local Minimum_Filter ' + str(i))
+        pyplot.savefig('Local Minimum_Filter ' + str(i) + '.jpg')
         pyplot.figure(4,(16,9))
         template = numpy.array([[0,1,1,1,1,1,1,1],[1,0,1,1,1,1,1,1],[1,1,0,1,1,1,1,1],[1,1,1,0,1,1,1,1],
                                 [1,1,1,1,0,1,1,1],[1,1,1,1,1,0,1,1],[1,1,1,1,1,1,0,1],[1,1,1,1,1,1,1,0]])
         pyplot.imshow(feature.match_template(numpy.array(sim,numpy.float64),template), vmin = 0, vmax = 1, cmap = pyplot.get_cmap('gray'), aspect = 'auto', origin = 'lower')
-        pyplot.show()
+        pyplot.title('Match_Template with my own 8x8 beat diagonal template ' + str(i))
+        pyplot.savefig('Match_Template with my own 8x8 beat diagonal template ' + str(i) + '.jpg')
     sys.exit()
     
 def matchSections():
@@ -390,10 +402,7 @@ def matchSections():
         for j in range(len(sections[2*i+1])-2):    
             template = numpy.array(pitches[2*i+1][sections[2*i+1][j+1]:sections[2*i+1][j+2]])
             temp = feature.match_template(image,template,pad_input=True)
-            print "temp.shape[1]: ", temp.shape[1]
-            print "temp.shape[0]: ", temp.shape[0]
             im = numpy.concatenate((im,temp),axis = 1)
-            print "im.shape[1]: ", im.shape[1]
             pyplot.vlines(12*j+12,0,im.shape[0],'b')
         ij = numpy.unravel_index(numpy.argmax(im), im.shape)
         x, y = ij[::-1]
@@ -404,35 +413,126 @@ def matchSections():
         pyplot.plot(x,y,'o',markeredgecolor='r',markerfacecolor='none',markersize=10)
         pyplot.xlim(0,im.shape[1]-1)
         pyplot.ylim(0,im.shape[0])
-        print "x range: ", im.shape[1]
-        print "# of sections: ", len(sections[2*i+1])
-        print "sections: ", sections
     pyplot.show()
     sys.exit()
     
-
+""" Determines the best matching section of two songs. The variables x,y mark this
+    location as the middle (?) of the template. From x,y the best-matched section
+    and its mashed location can be derived as section = x/12 and starting_segment = y."""    
+def mashComponents(localAudioFiles):
+    instSegments = localAudioFiles[0].analysis.segments #This is the base instrumental
+    vocalSegments = localAudioFiles[1].analysis.segments
+    instBeats = localAudioFiles[0].analysis.beats
+    vocalBeats = localAudioFiles[1].analysis.beats
+    pitches = instSegments.pitches
+    sections = localAudioFiles[1].analysis.sections #This is the new lead vocal layer
+    #pyplot.figure(0,(16,9))
+    image = numpy.array(pitches)
+    template = numpy.array(vocalSegments.that(selection.overlap(sections[0])).pitches)
+    im = feature.match_template(image,template,pad_input=True)
+    maxValues = [] #tuples of x coord, y coord, correlation value, and section length (in secs)
+    ij = numpy.unravel_index(numpy.argmax(im), im.shape)
+    x, y = ij[::-1]
+    maxValues.append((numpy.argmax(im),x,y,sections[0].duration))
+    for i in range(len(sections)-1):
+        template = numpy.array(vocalSegments.that(selection.overlap(sections[i+1])).pitches)
+        match = feature.match_template(image,template,pad_input=True)
+        ij = numpy.unravel_index(numpy.argmax(match), match.shape)
+        x, y = ij[::-1]
+        maxValues.append((numpy.argmax(match),12*i+x,y,sections[i+1].duration))
+        im = numpy.concatenate((im,match),axis = 1)
+    maxValues.sort()
+    maxValues.reverse()
+    try:
+        count = 0
+        while(maxValues[count][3] < 15.0):
+            count += 1
+        x = maxValues[count][1]
+        y = maxValues[count][2]
+    except:        
+        ij = numpy.unravel_index(numpy.argmax(im), im.shape)
+        x, y = ij[::-1]
+    print "x: ", x
+    print "y: ", y
+    print "max value: ", numpy.argmax(im)
+    print "maxValues: ", maxValues
+    #pyplot.imshow(im, cmap = pyplot.get_cmap('gray'), aspect = 'auto')
+    #pyplot.plot(x,y,'o',markeredgecolor='r',markerfacecolor='none',markersize=10)
+    #pyplot.show()
+    sectionLength = len(vocalSegments.that(selection.overlap(sections[x/12])))
+    sectionBeats = vocalBeats.that(selection.overlap(sections[x/12]))
+    print "sectionLength: ", sectionLength
+    matchingSegments = instSegments[(y-sectionLength/2):(y+sectionLength/2)]
+    print "matchingSegments: ", matchingSegments
+    matchingBeats = instBeats.that(selection.overlap_starts_of(matchingSegments))[-len(sectionBeats):]
+    """ Now, I have to make sure sectionBeats and matchingBeats are similarly aligned
+        within their group, aka bar of four beats. I will add a beat to the beginning
+        of matchingBeats until that condition is met. """
+    while(matchingBeats[0].local_context()[0] != sectionBeats[0].local_context()[0]):
+        print "matchingBeats[0].local_context()[0]: ", matchingBeats[0].local_context()[0]
+        print "sectionBeats[0].local_context()[0]: ", sectionBeats[0].local_context()[0]
+        matchingBeats.insert(0,instBeats[matchingBeats[0].absolute_context()[0]-1])
+        sectionBeats.append(vocalBeats[sectionBeats[-1].absolute_context()[0]+1])
+    print "matchingBeats: ", matchingBeats
+    print "sectionBeats: ", sectionBeats
+    print "len(matchingBeats): ", len(matchingBeats)
+    print "len(sectionBeats): ", len(sectionBeats)
+    """ So, matchingSegments contains the instSegments on which vocData will be overlaid.
+        Next, the corresponding vocalBeats for those instSegments will be identified. """
+    vocData = audio.getpieces(localAudioFiles[3], sectionBeats)
+    instData = audio.getpieces(localAudioFiles[2], matchingBeats)
+    mix = audio.megamix([instData, vocData])
+    mix2 = audio.megamix([vocData, instData])
+    mix.encode('Output.mp3')
+    mix2.encode('MoreOutput?.mp3')
+    vocData.encode('Vocal.mp3')
+    instData.encode('Instrumental.mp3')
+    os.system('automator /Users/jordanhawkins/Documents/workspace/Automatic\ DJ/import.workflow/')
+    sys.exit()
+    
+def mashFullMixes(localAudioFiles):
+    segments = localAudioFiles[1].analysis.segments
+    beats1 = localAudioFiles[0].analysis.beats
+    beats2 = localAudioFiles[1].analysis.beats
+    sections = localAudioFiles[1].analysis.sections
+    image = numpy.array(localAudioFiles[0].analysis.segments.pitches)
+    template = numpy.array(segments.that(selection.overlap(sections[0])).pitches)
+    im = feature.match_template(image,template,pad_input=True)
+    for i in range(len(sections)-1):
+        template = numpy.array(segments.that(selection.overlap(sections[i+1])).pitches)
+        im = numpy.concatenate((im,feature.match_template(image,template,pad_input=True)),axis = 1)
+    ij = numpy.unravel_index(numpy.argmax(im), im.shape)
+    x, y = ij[::-1]
+    data1 = audio.getpieces(localAudioFiles[0], beats1[y:y+len(beats2.that(selection.overlap(sections[x/12])))])
+    data2 = audio.getpieces(localAudioFiles[1], beats2.that(selection.overlap(sections[x/12])))
+    mix = audio.megamix([data2, data1])
+    mix.encode('Full_Mixes_Output.mp3')
+    data1.encode('data1.mp3')
+    data2.encode('data2.mp3')
+    os.system('automator /Users/jordanhawkins/Documents/workspace/Automatic\ DJ/import.workflow/')
+    sys.exit()
+    
 def main():
-    matchSections()
-    processImages()
-    analyzeChroma()
+    #matchSections()
     flushDirectory()
     filenames = getAudioFiles()
     localAudioFiles, filenames, tempos, keys = getInput(filenames)
+    matchTempoAndKey(localAudioFiles, tempos, keys)
+    localAudioFiles[0] = audio.LocalAudioFile('0.mp3')
+    localAudioFiles[1] = audio.LocalAudioFile('1.mp3')
+    localAudioFiles[2] = audio.LocalAudioFile('2.mp3')
+    localAudioFiles[3] = audio.LocalAudioFile('3.mp3')
+    mashComponents(localAudioFiles)
+    #mashFullMixes(localAudioFiles)
     equalize_tracks(localAudioFiles)
-    #cPickle.dump(keys, open('AmuKeys.pkl', 'w'))
     pickleAnalysisData(localAudioFiles)
-    sys.exit()
     """
     localAudioFiles = cPickle.load(open('AmuLafs.pkl'))
     filenames = cPickle.load(open('AmuFilenames.pkl'))
     tempos = [laf.analysis.tempo['value'] for laf in localAudioFiles]
     keys = [laf.analysis.key['value'] for laf in localAudioFiles]
     """
-    out = matchTempoAndKey(localAudioFiles, tempos, keys)
-    for i,o in enumerate(out):
-        o.encode(str(i))
-    #for o,filename in zip(out, filenames): o.encode("0 " + filename[-15:])
-    #deleteOldSongs(filenames)
+    deleteOldSongs(filenames)
     os.system('automator /Users/jordanhawkins/Documents/workspace/Automatic\ DJ/import.workflow/')      
     
 if __name__ == '__main__':
