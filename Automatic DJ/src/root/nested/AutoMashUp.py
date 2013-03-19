@@ -20,18 +20,16 @@ import matplotlib.pyplot as pyplot
 import matplotlib.image as image
 import scipy.ndimage as ndimage
 import cPickle as cPickle
-from collections import deque
-import skimage.filter as filter
 import skimage.feature as feature
+import Main
 
-programFiles = ['__init__.py','Main.py','AutoMashUp.py','LocalAudioFiles.pkl','filenames.pkl', 'segments.pkl', 
-                'tempos.pkl', 'valNames.pkl', 'valSegs.pkl', 'valTempos.pkl', 'valBeats.pkl', 'valLocalAudioFiles.pkl',
-                'AmuLafs.pkl', "AmuFilenames.pkl", "AmuPitches.pkl", "AmuKeys.pkl", 'AmuInstPitches.pkl', 
-                'AmuInstTimbre.pkl', 'AmuInstLoudness.pkl', 'AmuInstSections.pkl', 'AmuInstSimMats.pkl', 'Just_Dance.pkl']
+programFiles = ['__init__.py','Main.py','AutoMashUp.py','cowbell0.wav', 'cowbell2.wav']
 workingDirectory = '/Users/jordanhawkins/Documents/workspace/Automatic DJ/src/root/nested'
 lib = plistlib.readPlist('/Users/jordanhawkins/Music/iTunes/iTunes Music Library.xml')
 LOUDNESS_THRESH = -8 # per capsule_support module
 TEMPLATE_WIDTH = 30
+cowbell0 = audio.AudioData("cowbell0.wav", sampleRate=44100, numChannels=1) # beat 1
+cowbell2 = audio.AudioData("cowbell2.wav", sampleRate=44100, numChannels=1) # beats 2,3,4
 
 
 def flushDirectory():
@@ -59,14 +57,14 @@ def getInput(filenames):
     list = []
     for filename in filenames: 
         try:
-            laf = audio.LocalAudioFile(filename)
+            laf = audio.LocalAudioFile(filename, verbose=False)
             localAudioFiles.append(laf)
             print filename
-            print "key: ", laf.analysis.key['value']
             key = laf.analysis.key['value']
-            if(laf.analysis.mode['value'] == 0):
-                key = key+3
+            if(laf.analysis.mode['value'] == 0): key = key+3
+            if(key > 12): key = key - 12
             keys.append(key)
+            print "key: ", key
             print "key confidence: ", laf.analysis.key['confidence']
             print "mode: ", laf.analysis.mode['value']
             print "mode confidence: ", laf.analysis.mode['confidence']
@@ -82,13 +80,11 @@ def getInput(filenames):
         print "key: ", l[0]
         print "tempo: ", l[2]
     tempos = [laf.analysis.tempo['value'] for laf in localAudioFiles]
-    #cPickle.dump(localAudioFiles, open('AmuLafs.pkl', 'w'))
-    #cPickle.dump(filenames, open('AmuLafs.pkl', 'w'))
     return localAudioFiles, filenames, tempos, keys
  
 def equalize_tracks(tracks):   # copied from capsule_support module 
     def db_2_volume(loudness):
-        return (1.0 - LOUDNESS_THRESH * (LOUDNESS_THRESH - loudness) / 100.0)   
+        return (1.0 - LOUDNESS_THRESH * (LOUDNESS_THRESH - loudness) / 100.0)  
     for track in tracks:
         loudness = track.analysis.loudness
         track.gain = db_2_volume(loudness)
@@ -98,32 +94,66 @@ def deleteOldSongs(filenames):
         if filename in filenames:
             os.remove(filename)
 
-def meanPitches(segments): 
+def meanPitches(segments, beats): 
     """ 
-    Returns a pitch vector that is the mean of the pitch vectors of any segments  
+    Returns a pitch vector that is the mean of the pitch vectors of any segments
     that overlap this AudioQuantum. 
-    Note that this means that some segments will appear in more than one AudioQuantum. 
     """ 
-    temp_pitches = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] 
-    for segment in segments: 
-        for index, pitch in enumerate(segment.pitches): 
-            temp_pitches[index] = temp_pitches[index] + pitch 
-        mean_pitches = [pitch / len(segments) for pitch in temp_pitches] 
-    return mean_pitches 
+    pitches = []
+    for beat in beats:
+        temp_pitches = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        segs = segments.that(selection.are_contained_by(beat))
+        if(len(segs) == 0): segs = segments.that(selection.start_during(beat))
+        if(len(segs) == 0): segs = segments.that(selection.overlap(beat))
+        for seg in segs:
+            for index, pitch in enumerate(seg.pitches): 
+                temp_pitches[index] = temp_pitches[index] + pitch 
+        pitches.append([float(pitch / len(segs)) for pitch in temp_pitches])
+    return pitches 
 
-def meanTimbre(segments): 
+def meanTimbre(segments, beats): 
     """ 
     Returns a timbre vector that is the mean of the timbre vectors of any segments  
     that overlap this AudioQuantum. 
-    Note that this means that some segments will appear in more than one AudioQuantum. 
     """ 
-    temp_timbre = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] 
-    for segment in segments: 
-        for index, timbre in enumerate(segment.timbre): 
-            temp_timbre[index] = temp_timbre[index] + timbre 
-        mean_timbre = [timbre / len(segments) for timbre in temp_timbre] 
-    return mean_timbre 
+    timbre = []
+    for beat in beats:
+        temp = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        segs = segments.that(selection.are_contained_by(beat))
+        if(len(segs) == 0): segs = segments.that(selection.start_during(beat))
+        if(len(segs) == 0): segs = segments.that(selection.overlap(beat))
+        for seg in segs:
+            for index, tim in enumerate(seg.pitches): 
+                temp[index] = temp[index] + tim
+        timbre.append([float(tim / len(segs)) for tim in temp])
+    return timbre
 
+def meanLoudness(segments, beats): 
+    """ 
+    Returns a loudness vector that is the mean of the loudness values of any segments  
+    that overlap this AudioQuantum. 
+    """ 
+    loudness = []
+    for beat in beats:
+        segs = segments.that(selection.are_contained_by(beat))
+        if(len(segs) == 0): segs = segments.that(selection.start_during(beat))
+        if(len(segs) == 0): segs = segments.that(selection.overlap(beat))
+        values = [seg.loudness_max for seg in segments.that(selection.are_contained_by
+                                                            (beat))]
+        loudness.append([sum(values)/len(segs)]*6)
+    return loudness
+
+    """
+    Get the beats that comprise a specific section of a song. 
+    """
+def getSectBeats(section):
+    beats = []
+    bars = section.children()
+    for bar in bars:
+        for beat in bar.children():
+            beats.append(beat)
+    return beats
+    
 def matchTempoAndKey(localAudioFiles, tempos, keys):
     keys[2] = keys[0]
     keys[4] = keys[0]
@@ -137,9 +167,10 @@ def matchTempoAndKey(localAudioFiles, tempos, keys):
     midTempo = round(midTempo)
     print "rounded midTempo: ", midTempo
     mod = modify.Modify()
-    out = [mod.shiftTempo(laf, midTempo/tempo) for laf,tempo in zip(localAudioFiles,tempos)]
+    out = [mod.shiftTempo(laf, midTempo/tempo) for laf,tempo in 
+           zip(localAudioFiles,tempos)]
     if max(keys)-min(keys) > 6:
-        midKey = (((12 - max(keys) + min(keys))/2) + max(keys)) % 12 # there are 12 chroma values
+        midKey = (((12 - max(keys) + min(keys))/2) + max(keys)) % 12 #12 chroma values...
     else:
         midKey = (max(keys) + min(keys))/2
     for i in range(len(out)):
@@ -147,179 +178,10 @@ def matchTempoAndKey(localAudioFiles, tempos, keys):
             out[i] = mod.shiftPitchSemiTones(out[i],midKey-keys[i]+12)
         else:
             out[i] = mod.shiftPitchSemiTones(out[i],midKey-keys[i])
-    print "midTempo: ", midTempo
+    print "filename of first in group of 5: ", localAudioFiles[0].filename
     print "midKey: ", midKey
-    out[0].encode('0.mp3')
-    out[1].encode('1.mp3')
-    out[2].encode('2.mp3')
-    out[3].encode('3.mp3')
-    out[4].encode('4.mp3')
-"""
-Calculates a matrix of correlation values between
-a chroma vector and all other chroma vectors.
-"""
-def corrMatrix(p1,p2,key1,key2):
-    print "p1[0]: ", p1[0]
-    temp = []
-    for vector in p1:
-        deq = deque(vector)
-        deq.rotate(key2-key1)
-        l = list(deq)
-        temp.append(l)
-    p1 = temp
-    print "p1[0]: ", p1[0]
-    corrMatrix = []
-    for pitches in p1:
-        eucNorm =[linalg.norm(matlib.array(pitches)-matlib.array(p)) for p in p2]
-        corrMatrix.append(eucNorm)        
-    return corrMatrix
-
-def analyzeChroma():
-    """
-    selectionMarkers = [[(18,129),(132,340),(452,468)],             # 1. Just Dance
-                        [(18,129),(144,352),(352,368)],             # 2. In My Head
-                        [(120,152),(182,248),(358,444),(446,632)],  # 3. Paradise
-                        [(0,16),(32,64),(60,123),(131,224)],        # 4. Wide Awake               
-                        [(80,208),(240,304),(536,600)],             # 5. Paradise
-                        [(32,160),(192,256),(32,96)],               # 6. Day n Nite
-                        [(16,80),(156,172),(208,364)],              # 7. Good Feeling 
-                        [(16,80),(148,164),(208,364)],              # 8. Good Feeling              
-                        [(144,208),(284,348),(392,464)],            # 9. Good Feeling
-                        [(64,128),(176,240),(240,312)],             # 10. Dynamite           
-                        [(64,144),(176,204),(360,392),(440,520)],   # 11. Good Feeling
-                        [(16,96),(96,124),(360,392),(440,520)],     # 12. Just Dance
-                        [],                                         # 13. Titanium
-                        [],                                         # 14. Titanium
-                        [(160,192),(352,384),(448,480)],            # 15. Titanium 
-                        [(80,112),(112,144),(80,112)],              # 16. Who's That Chick
-                        [(256,352),(416,448)],                      # 17. Titanium
-                        [(64,160),(64,96)],                         # 18. Disturbia
-                        [],[],[],[],[],[],[],[],
-                        [(144,176),(272,336),(368,432)],            # 27. Firework 
-                        [(80,112),(208,272),(304,368)],             # 28. Paparazzi
-                        [(16,80),(176,240),(312,368)],              # 29. Firework
-                        [(0,64),(160,224),(296,352)],               # 30. Feel So Close
-                        [(77,140),(237,269),(336,464)],             # 31. Firework
-                        [(77,140),(237,269),(336,464)],             # 32. Firework
-                        [],[],[],[],[],[],
-                        [(93,188),(221,316),(349,416)],             # 39. Feel So Close
-                        [(77,172),(233,328),(233,300)],             # 40. Last Friday Night
-                        [],[],                                      # 41. Feel So Close # 42. Release Me
-                        [(0,64),(64,96),(96,160),(160,352),(352,420)],  #43. Feel So Close
-                        [(0,64),(64,96),(96,128),(128,320),(322,390)],  #44. Please Don't Go
-                        [],[],[],[],[],[]]
-    """
-    pitches = cPickle.load(open('AmuInstPitches.pkl'))
-    loudness = cPickle.load(open('AmuInstLoudness.pkl'))
-    sections = cPickle.load(open('AmuInstSections.pkl'))
-    filenames = cPickle.load(open('AmuFilenames.pkl'))
-    keys = cPickle.load(open('AmuKeys.pkl'))
-    for i in range(len(pitches)/2):
-        pyplot.figure(4*i,(16,9))
-        print "p1 is: ", filenames[2*i]
-        print "key: ", keys[2*i]
-        print "p2 is: ", filenames[2*i+1]
-        print "key: ", keys[2*i+1]
-        pcorrMtx = corrMatrix(pitches[2*i], pitches[2*i+1], keys[2*i],keys[2*i+1])
-    """
-        pyplot.imshow(pcorrMtx, vmin = 0, vmax = 1, cmap = pyplot.get_cmap('gray'), aspect = 'auto', origin = 'lower')
-        pyplot.ylabel(os.path.basename(filenames[2*i]) + " (in beats)")
-        pyplot.xlabel(os.path.basename(filenames[2*i+1]) + " (in beats)")
-        pyplot.title('Pitch Similarity')
-        for section in sections[2*i]: pyplot.hlines(section, 0, len(loudness[2*i+1])-1)
-        for section in sections[2*i+1]: pyplot.vlines(section, 0, len(loudness[2*i])-1)
-        pyplot.figure(4*i+1,(16,9))
-        filtpCorrMtx = pcorrMtx
-        for t in range(len(pitches[2*i+1])-4):
-            for p in range(len(pitches[2*i])-4):
-                average = 0.0
-                for k in range(4):
-                    k = p+k
-                    for j in range(4):
-                        j = t+j
-                        average += numpy.power([pcorrMtx[k][j]],[2])[0]
-                filtpCorrMtx[p][t] = average/16.0
-        pyplot.imshow(filtpCorrMtx, vmin = 0, vmax = 1, cmap = pyplot.get_cmap('gray'), aspect = 'auto', origin = 'lower')
-        pyplot.ylabel(os.path.basename(filenames[2*i]) + " (in beats)")
-        pyplot.xlabel(os.path.basename(filenames[2*i+1]) + " (in beats)")
-        pyplot.title('Filtered Pitch Similarity')
-        for section in sections[2*i]: pyplot.hlines(section, 0, len(loudness[2*i+1])-1)
-        for section in sections[2*i+1]: pyplot.vlines(section, 0, len(loudness[2*i])-1)
-        pyplot.figure(4*i+2,(16,9))
-        pyplot.imshow(ndimage.median_filter(pcorrMtx,4), vmin = 0, vmax = 1, cmap = pyplot.get_cmap('gray'), aspect = 'auto', origin = 'lower')
-        pyplot.ylabel(os.path.basename(filenames[2*i]) + " (in beats)")
-        pyplot.xlabel(os.path.basename(filenames[2*i+1]) + " (in beats)")
-        pyplot.title('Median Filtered Pitch Similarity')
-        for section in sections[2*i]: pyplot.hlines(section, 0, len(loudness[2*i+1])-1)
-        for section in sections[2*i+1]: pyplot.vlines(section, 0, len(loudness[2*i])-1)
-        
-        pyplot.figure(4*i+3,(16,9))
-        filter.tv_denoise(numpy.array(pcorrMtx,numpy.float64))
-        pyplot.imshow(filter.tv_denoise(numpy.array(pcorrMtx,numpy.float64)), vmin = 0, vmax = 1, cmap = pyplot.get_cmap('gray'), aspect = 'auto', origin = 'lower')
-        pyplot.ylabel(os.path.basename(filenames[2*i]) + " (in beats)")
-        pyplot.xlabel(os.path.basename(filenames[2*i+1]) + " (in beats)")
-        pyplot.title('TV_Denoised Pitch Similarity')
-        for section in sections[2*i]: pyplot.hlines(section, 0, len(loudness[2*i+1])-1)
-        for section in sections[2*i+1]: pyplot.vlines(section, 0, len(loudness[2*i])-1)
-        pyplot.show()
-        
-        pyplot.figure(3*i+1,(16,9))
-        tcorrMtx = corrMatrix(timbre[2*i], timbre[2*i+1], keys[2*i],keys[2*i+1])
-        pyplot.imshow(tcorrMtx, vmin = 0, vmax = 1, cmap = pyplot.get_cmap('gray'), aspect = 'auto', origin = 'lower')
-        pyplot.ylabel(os.path.basename(filenames[2*i]) + " (in beats)")
-        pyplot.xlabel(os.path.basename(filenames[2*i+1]) + " (in beats)")
-        pyplot.title('Timbre Similarity')
-        
-        pyplot.figure(3*i+2,(16,9))
-        lcorrMtx = []
-        for l1 in loudness[2*i]:
-            diff =[abs(l1-l2) for l2 in loudness[2*i+1]]
-            lcorrMtx.append(diff)
-        pyplot.imshow(lcorrMtx, vmin = 0, vmax = 1, cmap = pyplot.get_cmap('gray'), aspect = 'auto', origin = 'lower')
-        pyplot.ylabel(os.path.basename(filenames[2*i]) + " (in beats)")
-        pyplot.xlabel(os.path.basename(filenames[2*i+1]) + " (in beats)")
-        pyplot.title('Loudness Similarity')
-        for section in sections[2*i]: pyplot.hlines(section, 0, len(loudness[2*i+1])-1)
-        for section in sections[2*i+1]: pyplot.vlines(section, 0, len(loudness[2*i])-1)
-        pyplot.figure(3*i+2,(16,9))
-        filtlCorrMtx = lcorrMtx
-        for t2 in range(len(pitches[2*i+1])-4):
-            for p2 in range(len(pitches[2*i])-4):
-                average = 0.0
-                for k2 in range(4):
-                    k2 = p2+k2
-                    for j2 in range(4):
-                        j2 = t2+j2
-                        average += numpy.power([lcorrMtx[k][j]],[2])[0]
-                filtlCorrMtx[p2][t2] = average/16.0
-        pyplot.imshow(filtlCorrMtx, vmin = 0, vmax = 1, cmap = pyplot.get_cmap('gray'), aspect = 'auto', origin = 'lower')
-        pyplot.ylabel(os.path.basename(filenames[2*i]) + " (in beats)")
-        pyplot.xlabel(os.path.basename(filenames[2*i+1]) + " (in beats)")
-        pyplot.title('Filtered Loudness Similarity')
-        for section in sections[2*i]: pyplot.hlines(section, 0, len(loudness[2*i+1])-1)
-        for section in sections[2*i+1]: pyplot.vlines(section, 0, len(loudness[2*i])-1)
-        pyplot.figure(3*i+2,(16,9))
-        combinedMtx = []
-        for t3,t4 in zip(pcorrMtx,lcorrMtx):
-            combinedVector = [abs(p3-p4) for p3,p4 in zip(t3,t4)]
-            combinedMtx.append(combinedVector)
-        pyplot.imshow(combinedMtx, vmin = 0, vmax = 1, cmap = pyplot.get_cmap('gray'), aspect = 'auto', origin = 'lower')
-        pyplot.ylabel(os.path.basename(filenames[2*i]) + " (in beats)")
-        pyplot.xlabel(os.path.basename(filenames[2*i+1]) + " (in beats)")
-        pyplot.title('Combined Dynamic and Chromatic Similarity')
-        for section in sections[2*i]: pyplot.hlines(section, 0, len(loudness[2*i+1])-1)
-        for section in sections[2*i+1]: pyplot.vlines(section, 0, len(loudness[2*i])-1)
-        pyplot.show()
-        for sels1,sels2 in zip(selectionMarkers[2*i],selectionMarkers[2*i+1]):
-            print "sels1: ", sels1
-            print "sels2: ", sels2
-            pyplot.hlines(sels1[0], sels2[0], sels2[1], 'r')
-            pyplot.hlines(sels1[1], sels2[0], sels2[1], 'r')
-            pyplot.vlines(sels2[0],sels1[0], sels1[1], 'r')
-            pyplot.vlines(sels2[1],sels1[0], sels1[1], 'r')
-        """ 
-    pyplot.show()
-    sys.exit()
+    for i in range(len(out)): out[i].encode(str(i) + '.mp3')
+    return [audio.LocalAudioFile(str(i) + '.mp3',verbose=False) for i in range(5)]
 
 def pickleAnalysisData(localAudioFiles):
     beatList = [laf.analysis.beats for laf in localAudioFiles]
@@ -417,48 +279,69 @@ def matchSections():
     pyplot.show()
     sys.exit()
     
+def addCowbell(mix, beats):
+    beat0 = beats[0].start
+    for beat in beats:
+        startsample = int((beat.start-beat0) * mix.sampleRate)
+        if(beat.local_context()[0]==0): cowbell = cowbell0[0:]
+        else: 
+            cowbell = cowbell2[0:]
+            cowbell.data = (cowbell.data*.1).astype(cowbell.data.dtype)
+        if mix.data.shape[0] - startsample > cowbell.data.shape[0]:
+            mix.data[startsample:startsample+len(cowbell.data)] += cowbell.data[0:]
+    return mix
+    
 """ Determines the best matching section of two songs. The variables x,y mark this
     location as the middle (?) of the template. From x,y the best-matched section
     and its mashed location can be derived as section = x/12 and starting_segment = y."""    
-def mashComponents(localAudioFiles):
-    instSegments = localAudioFiles[0].analysis.segments #This is the base instrumental
-    vocalSegments = localAudioFiles[1].analysis.segments
-    instBeats = localAudioFiles[0].analysis.beats
-    vocalBeats = localAudioFiles[1].analysis.beats
-    pitches = instSegments.pitches
-    timbre = instSegments.timbre
+def mashComponents(localAudioFiles, loudnessMarkers):
+    instSegments = localAudioFiles[0].analysis.segments# This is the base track
+    vocalSegments = localAudioFiles[1].analysis.segments# This is the overlay track
+    instBeats = localAudioFiles[0].analysis.beats[loudnessMarkers[0][0]:
+                                                  loudnessMarkers[0][1]]
+    vocalBeats = localAudioFiles[1].analysis.beats[loudnessMarkers[1][0]:
+                                                   loudnessMarkers[1][1]]
+    pitches = meanPitches(instSegments,instBeats)
+    timbre = meanTimbre(instSegments,instBeats)
     sections = localAudioFiles[1].analysis.sections #This is the new lead vocal layer
+    sections = sections.that(selection.are_contained_by_range(
+            vocalBeats[0].start, vocalBeats[-1].start+vocalBeats[-1].duration))
+    if(len(sections)==0):sections = localAudioFiles[1].analysis.sections[2:-2]
     pyplot.figure(0,(16,9))
     image = numpy.array(pitches)
     image = numpy.concatenate((image,numpy.array(timbre)),axis = 1)
-    image = numpy.concatenate((image,numpy.array([[loud]*6 for loud in instSegments.loudness_max])),axis = 1)
+    image = numpy.concatenate((image,numpy.array(meanLoudness(instSegments,instBeats))),
+                              axis = 1)
     """ Now image contains chromatic, timbral, and loudness information"""
-    template = numpy.array(vocalSegments.that(selection.overlap(sections[0])).pitches)
-    template = numpy.concatenate((template,numpy.array(vocalSegments.that
-                                                (selection.overlap(sections[0])).timbre)),axis=1)
-    template = numpy.concatenate((template,numpy.array([[loud]*6 for loud in vocalSegments.that
-                                                (selection.overlap(sections[0])).loudness_max])),axis = 1)
+    sectBeats = getSectBeats(sections[0]) # get beats that comprise a specific section
+    template = numpy.array(meanPitches(vocalSegments,sectBeats))
+    template = numpy.concatenate((template,numpy.array(
+                                meanTimbre(vocalSegments,sectBeats))),axis=1)
+    template = numpy.concatenate((template,numpy.array(
+                                meanLoudness(vocalSegments,sectBeats))),axis = 1)
     im = feature.match_template(image,template,pad_input=True)
-    maxValues = [] #tuples of x coord, y coord, correlation value, and section length (in secs)
+    maxValues = [] #tuples of x coord, y coord, correlation, and section len(in secs)
     ij = numpy.unravel_index(numpy.argmax(im), im.shape)
     x, y = ij[::-1]
     maxValues.append((numpy.argmax(im),x,y,sections[0].duration))
     for i in range(len(sections)-1):
-        template = numpy.array(vocalSegments.that(selection.overlap(sections[i+1])).pitches)
-        template = numpy.concatenate((template,numpy.array(vocalSegments.that
-                                                (selection.overlap(sections[i+1])).timbre)),axis=1)
-        template = numpy.concatenate((template,numpy.array([[loud]*6 for loud in vocalSegments.that
-                                                (selection.overlap(sections[i+1])).loudness_max])),axis = 1)
+        sectBeats = getSectBeats(sections[i+1])
+        template = numpy.array(meanPitches(vocalSegments,sectBeats))
+        template = numpy.concatenate((template,numpy.array(
+                                meanTimbre(vocalSegments,sectBeats))), axis=1)
+        template = numpy.concatenate((template,numpy.array(
+                                meanLoudness(vocalSegments,sectBeats))),axis = 1)
         match = feature.match_template(image,template,pad_input=True)
         ij = numpy.unravel_index(numpy.argmax(match), match.shape)
         x, y = ij[::-1]
-        maxValues.append((numpy.argmax(match),TEMPLATE_WIDTH*i+x,y,sections[i+1].duration))
+        maxValues.append((numpy.argmax(match),
+                          TEMPLATE_WIDTH*i+x,y,sections[i+1].duration))
         im = numpy.concatenate((im,match),axis = 1)
     maxValues.sort()
     maxValues.reverse()
     try:
         count = 0
-        while(maxValues[count][3] < 15.0):
+        while(maxValues[count][3] < 10.0): # choose a section longer than 10 secs
             count += 1
         x = maxValues[count][1]
         y = maxValues[count][2]
@@ -466,61 +349,75 @@ def mashComponents(localAudioFiles):
         print "exception in mashComponents..."
         ij = numpy.unravel_index(numpy.argmax(im), im.shape)
         x, y = ij[::-1]
-    #pyplot.imshow(im, cmap = pyplot.get_cmap('gray'), aspect = 'auto')
-    #pyplot.plot(x,y,'o',markeredgecolor='r',markerfacecolor='none',markersize=15)
-    #pyplot.show()
-    sectionLength = len(vocalSegments.that(selection.overlap(sections[x/TEMPLATE_WIDTH])))
-    sectionBeats = vocalBeats.that(selection.overlap(sections[x/TEMPLATE_WIDTH]))
-    matchingSegments = instSegments[(y-sectionLength/2):(y+sectionLength/2)]
-    matchingBeats = instBeats.that(selection.overlap_starts_of(matchingSegments))[-len(sectionBeats):]
-    """ I have to make sure sectionBeats and matchingBeats are similarly aligned
-        within their group, aka bar of four beats. I will add a beat to the beginning
-        of matchingBeats until that condition is met.""" 
-    while(matchingBeats[0].local_context()[0] != sectionBeats[0].local_context()[0]):
-        matchingBeats.insert(0,instBeats[matchingBeats[0].absolute_context()[0]-1])
-        sectionBeats.append(vocalBeats[sectionBeats[-1].absolute_context()[0]+1])
-    
+    pyplot.imshow(im, cmap = pyplot.get_cmap('gray'), aspect = 'auto')
+    pyplot.plot(x,y,'o',markeredgecolor='r',markerfacecolor='none',markersize=15)
+    pyplot.show()
+    sectionBeats = getSectBeats(sections[x/TEMPLATE_WIDTH])
+    print "len(sectionBeats): ", len(sectionBeats)
+    print "len(instBeats): ", len(instBeats)
+    print "y: ", y
+    y = instBeats[y].absolute_context()[0]
+    instBeats = localAudioFiles[0].analysis.beats 
+    matchingBeats = instBeats[(y-len(sectionBeats)/2):(y+len(sectionBeats)/2)]
+    print"len(matchingBeats): ", len(matchingBeats)
+    matchingBeats = matchingBeats[-len(sectionBeats):]
+    print"len(matchingBeats): ", len(matchingBeats)
+    """ Check to make sure lengths of beat lists are equal... """
     if len(matchingBeats) != len(sectionBeats):
         print "len(matchingBeats) != len(sectionBeats). For now, I will just truncate..."
         print "len(matchingBeats): ", len(matchingBeats)
         print "len(sectionBeats): ", len(sectionBeats)
-        if len(matchingBeats) > len(sectionBeats):matchingBeats = matchingBeats[:len(sectionBeats)]
+        if len(matchingBeats) > len(sectionBeats):matchingBeats = matchingBeats[
+                                                            :len(sectionBeats)]
         else: sectionBeats = sectionBeats[:len(matchingBeats)]
-    """ Next, I will use the beats around the designated beats above to transition into and out
-        of the mashup. """
+    """ I have to make sure sectionBeats and matchingBeats are similarly aligned
+        within their group, aka bar of four beats. I will add a beat to the beginning
+        of matchingBeats until that condition is met. I re-initialize instBeats and
+        vocalBeats, because now I want to include the areas outside of those marked
+        off by AutomaticDJ for fade ins and fade outs."""
+    vocalBeats = localAudioFiles[1].analysis.beats
+    while(matchingBeats[0].local_context()[0] != sectionBeats[0].local_context()[0]):
+        matchingBeats.insert(0,instBeats[matchingBeats[0].absolute_context()[0]-1])
+        sectionBeats.append(vocalBeats[sectionBeats[-1].absolute_context()[0]+1])
+    """ Check to make sure lengths of beat lists are equal... """
+    if len(matchingBeats) != len(sectionBeats):
+        print "len(matchingBeats) != len(sectionBeats) at the second checkpoint."
+        print "This should not be the case. The while loop must not be adding beats"
+        print "to both lists equally."
+        print "len(matchingBeats): ", len(matchingBeats)
+        print "len(sectionBeats): ", len(sectionBeats)
+        sys.exit()
+    """ Next, I will use the beats around the designated beats above to transition into
+    and out of the mashup. """
     XLEN = 4 # number of beats in crossmatch
     if(matchingBeats[0].absolute_context()[0] < XLEN or
        len(instBeats) - matchingBeats[-1].absolute_context()[0] - 1 < XLEN or
        sectionBeats[0].absolute_context()[0] < XLEN or
        len(vocalBeats) - sectionBeats[-1].absolute_context()[0] - 1 < XLEN):
-        print "Decrement XLEN to number of available beats."
         XLEN -= 1
-    BUFFERLEN = 8 # number of beats before and after crossmatches
+    BUFFERLEN = 12 # number of beats before and after crossmatches
     while(matchingBeats[0].absolute_context()[0] < BUFFERLEN+XLEN or
        len(instBeats) - matchingBeats[-1].absolute_context()[0] - 1 < BUFFERLEN+XLEN or
        sectionBeats[0].absolute_context()[0] < BUFFERLEN+XLEN or
        len(vocalBeats) - sectionBeats[-1].absolute_context()[0] - 1 < BUFFERLEN+XLEN):
-        print "Decrement BUFFERLEN to number of available beats."
         BUFFERLEN -= 1
     try:
-        """ These are the 4 beats before matchingBeats. These are the four beats of the instrumental
-            track that preclude the mashed section. """
+        """ These are the 4 beats before matchingBeats. These are the four beats of the
+        instrumental track that preclude the mashed section. """
         b4beatsI = instBeats[matchingBeats[0].absolute_context()[0]-XLEN:
                             matchingBeats[0].absolute_context()[0]]
-        """ These are the 4 beats after matchingBeats. These are the four beats of the instrumental
-            track that follow the mashed section. """
+        """ These are the 4 beats after matchingBeats. These are the four beats of the
+        instrumental track that follow the mashed section. """
         afterbeatsI = instBeats[matchingBeats[-1].absolute_context()[0]+1:
                             matchingBeats[-1].absolute_context()[0]+1+XLEN]
         if(len(b4beatsI) != len(afterbeatsI)):
             print "The lengths of b4beatsI and afterbeatsI are not equal."
         """ These are the 16 beats before the 4-beat crossmatch into matchingBeats. """
         preBufferBeats = instBeats[matchingBeats[0].absolute_context()[0]-BUFFERLEN-XLEN:
-                                                matchingBeats[0].absolute_context()[0]-XLEN]
+                                            matchingBeats[0].absolute_context()[0]-XLEN]
         """ These are the 16 beats before the 4-beat crossmatch into matchingBeats. """
         postBufferBeats = instBeats[matchingBeats[-1].absolute_context()[0]+1+XLEN:
-                                                matchingBeats[-1].absolute_context()[0]+1+XLEN+BUFFERLEN]
-        print "len(preBufferBeats): ", len(preBufferBeats)
-        print "len(postBufferBeats): ", len(postBufferBeats)
+                                matchingBeats[-1].absolute_context()[0]+1+XLEN+BUFFERLEN]
         if(len(preBufferBeats) != len(postBufferBeats)):
             print "The lengths of preBufferBeats and postBufferBeats are not equal."
             print "len(preBufferBeats): ", len(preBufferBeats)
@@ -528,19 +425,14 @@ def mashComponents(localAudioFiles):
             print matchingBeats[-1].absolute_context()[0]
             print len(instBeats)
             sys.exit()
-        """ These are the 4 beats before matchingBeats. These are the four beats of the new vocal
-            track that preclude the mashed section. """
+        """ These are the 4 beats before matchingBeats. These are the four beats of the
+        new vocal track that preclude the mashed section. """
         b4beatsV = vocalBeats[sectionBeats[0].absolute_context()[0]-XLEN:
                             sectionBeats[0].absolute_context()[0]]
-        """ These are the 4 beats after matchingBeats. These are the four beats of the new vocal
-            track that follow the mashed section. """
+        """ These are the 4 beats after matchingBeats. These are the four beats of the 
+        new vocal track that follow the mashed section. """
         afterbeatsV = vocalBeats[sectionBeats[-1].absolute_context()[0]+1:
                             sectionBeats[-1].absolute_context()[0]+1+XLEN]
-        print "afterbeatsI: ", afterbeatsI
-        print "afterbeatsV: ", afterbeatsV
-        print "matchingBeats: ", matchingBeats
-        print "sectionBeats: ", sectionBeats
-        print "postBufferBeats: ", postBufferBeats
         if(len(b4beatsV) != len(afterbeatsV)):
             print "The lengths of b4beatsI and afterbeatsI are not equal."
             sys.exit()
@@ -549,31 +441,32 @@ def mashComponents(localAudioFiles):
         sys.exit()
     """ vocData: An AudioData object for the new vocal data that will be overlaid. 
         instData: An AudioData object for the base instrumental track. 
-        originalVocData: An AudioData object of the original vocal to accompany the new one. 
-        vocalMix: An AudioData of both vocal tracks mixed together, in order to keep the overall
-            vocal loudness approximately constant. 
-        mix: An AudioData of the instrumental track and combined vocals mixed together. """
-    vocData = audio.getpieces(localAudioFiles[3], b4beatsV + sectionBeats + afterbeatsV)
-    instData = audio.getpieces(localAudioFiles[2], b4beatsI + matchingBeats + afterbeatsI)
-    #action.make_mono(vocData)
-    #action.make_mono(instData)
-    #originalVocData = audio.getpieces(localAudioFiles[4], b4beatsI + matchingBeats + afterbeatsI)
-    #vocalMix = audio.megamix([originalVocData, vocData])
-    #vocData.encode('vocalMix.mp3')
-    if instData.data.shape[0] >= vocData.data.shape[0]: mix = audio.megamix([instData, vocData])
-    else: mix = audio.megamix([vocData, instData]) # for some reason, the slightly longer data set has to go first.
+        originalVocData: An AudioData object of the original vocal to accompany 
+            the new one. 
+        vocalMix: An AudioData of both vocal tracks mixed together, in order to 
+            keep the overall vocal loudness approximately constant. 
+        mix: An AudioData of the instrumental track and combined vocals
+            mixed together. """
+    vocData = audio.getpieces(localAudioFiles[3],b4beatsV+sectionBeats+afterbeatsV)
+    instData = audio.getpieces(localAudioFiles[2],b4beatsI+matchingBeats+afterbeatsI)
+    if instData.data.shape[0] >= vocData.data.shape[0]: 
+        mix = audio.megamix([instData, vocData])
+    else: 
+        mix = audio.megamix([vocData, instData]) # the longer data set has to go first.
     mix.encode('mix.mp3')
+    vocData = addCowbell(vocData, b4beatsV + sectionBeats + afterbeatsV)
+    vocData.encode('vocData.mp3')
     """ Now, make a similar mix for before the mashed sections..."""
     instData = audio.getpieces(localAudioFiles[2], preBufferBeats + b4beatsI)
-    originalVocData = audio.getpieces(localAudioFiles[4], preBufferBeats + b4beatsI)
-    premix = audio.megamix([instData, originalVocData])
+    vocData = audio.getpieces(localAudioFiles[4], preBufferBeats + b4beatsI)
+    premix = audio.megamix([instData, vocData])
     """ ...and another mix for after the mashed sections."""
     instData = audio.getpieces(localAudioFiles[2], afterbeatsI + postBufferBeats)
-    originalVocData = audio.getpieces(localAudioFiles[4], afterbeatsI + postBufferBeats)
-    postmix = audio.megamix([instData, originalVocData])
-    """ Now, I have three AudioData objects, mix, premix, and postmix, that overlap by four beats. 
-        I will build Crossmatch objects from the overlapping regions, and three Playback objects 
-        for the areas that are not in transition. """
+    vocData = audio.getpieces(localAudioFiles[4], afterbeatsI + postBufferBeats)
+    postmix = audio.megamix([instData, vocData])
+    """ Now, I have three AudioData objects, mix, premix, and postmix, that overlap by
+    four beats. I will build Crossmatch objects from the overlapping regions, and three 
+    Playback objects for the areas that are not in transition. """
     action.make_stereo(premix)
     action.make_stereo(mix)
     action.make_stereo(postmix)
@@ -585,26 +478,78 @@ def mashComponents(localAudioFiles):
     playback2 = action.Playback(mix,b4dur,mix.duration - b4dur - abdur)
     crossfade2 = action.Crossfade((mix,postmix),(mix.duration - abdur,0.0),abdur) 
     playback3 = action.Playback(postmix,abdur,sum([p.duration for p in postBufferBeats]))
-    action.render([playback1], 'pb1.mp3')
-    action.render([crossfade1], 'xfade1.mp3')
-    action.render([playback2], 'pb2.mp3')
-    action.render([crossfade2], 'xfade2.mp3')
-    action.render([playback3], 'pb3.mp3')
-    action.render([playback1,crossfade1,playback2,crossfade2,playback3], 'withXmatches.mp3')
-    os.system('automator /Users/jordanhawkins/Documents/workspace/Automatic\ DJ/import.workflow/')
+    action.render([playback1,crossfade1,playback2,crossfade2,playback3], 'mashup.mp3')
+    deleteOldSongs(['0.mp3', '1.mp3', '2.mp3', '3.mp3', '4.mp3'])
+    os.system('automator /Users/jordanhawkins/Documents/workspace/'
+                + 'Automatic\ DJ/import.workflow/')
     
+def checkBeats(lafs, tempos, filenames):
+    beats = [l.analysis.beats for l in lafs]
+    for i,t in enumerate(tempos):
+        misAlignedBeats = 0
+        misAlignedBars = 0
+        beatDur = 60.0/round(t)
+        for b in beats[i]:
+            #Do the beats land on the on-beat?
+            if(b.start % beatDur > beatDur/4):
+                #print "mis-aligned beat.start at: ", b.start
+                #print "b.absolute_context()[0]*beatDur: ", b.absolute_context()[0]*beatDur
+                #print "b.start % beatDur: ", b.start % beatDur
+                misAlignedBeats+=1
+            #Does the 1 beat line up with the 1?
+            if(b.local_context()[0] == 0 and b.start % 4*beatDur > beatDur/4): 
+                misAlignedBars+=1
+        print "filename: ", filenames[i]
+        print "len(beats): ", len(beats[i])
+        print "misAlignedBeats: ", float(misAlignedBeats)/float(len(beats[i]))
+        print "misAlignedBars: ", float(misAlignedBars)/(float(len(beats[i]))/4)
+        print "mean beat confidence: ", numpy.mean(beats[i].confidence)
+    
+def cowbellAll(lafs):
+    for i,laf in enumerate(lafs):
+        ad = audio.AudioData(laf.filename, sampleRate=44100, numChannels=1, verbose=False)
+        beats = laf.analysis.beats
+        print "beats: ", beats
+        cb = addCowbell(ad,beats)
+        cb.encode(str(i) +'.mp3')
+        
 def main():
-    
     flushDirectory()
     filenames = getAudioFiles()
-    localAudioFiles, filenames, tempos, keys = getInput(filenames)
-    equalize_tracks([localAudioFiles[0],localAudioFiles[1],localAudioFiles[2]])
-    equalize_tracks([localAudioFiles[3],localAudioFiles[4]])
-    matchTempoAndKey(localAudioFiles, tempos, keys)
-    
-    localAudioFiles = [audio.LocalAudioFile(str(i) + '.mp3') for i in range(5)]
-    #deleteOldSongs(filenames)
-    mashComponents(localAudioFiles)    
+    for j in range(len(filenames)/5):
+        localAudioFiles = [audio.LocalAudioFile(filenames[5*j], verbose=False),
+                           audio.LocalAudioFile(filenames[5*j+1], verbose=False)]
+        localAudioFiles.append(audio.AudioData(filenames[5*j+2], sampleRate=44100, 
+                                               numChannels=2, verbose=False))
+        localAudioFiles.append(audio.AudioData(filenames[5*j+3], sampleRate=44100, 
+                                               numChannels=2, verbose=False))
+        localAudioFiles.append(audio.AudioData(filenames[5*j+4], sampleRate=44100, 
+                                               numChannels=2, verbose=False))
+        keys = [localAudioFiles[0].analysis.key['value'], localAudioFiles[1].
+                analysis.key['value'], 0,0,0]
+        for i,laf in enumerate(localAudioFiles[0:2]):
+            if(laf.analysis.mode['value'] == 0): keys[i] = keys[i]+3
+            if(keys[i] > 11): keys[i] = keys[i] - 12
+        print "keys: ", keys
+        tempos = [localAudioFiles[0].analysis.tempo['value'], localAudioFiles[1].
+                  analysis.tempo['value'], 0,0,0]
+        deleteOldSongs([os.path.basename(laf.filename) for laf in localAudioFiles])
+        localAudioFiles = matchTempoAndKey(localAudioFiles, tempos, keys)
+        for i in range(3): localAudioFiles[i+2].encode(str(i)+'.mp3')
+        print "tempos after match should equal midTempo: ", [laf.analysis.tempo['value']
+                                                             for laf in localAudioFiles]
+        equalize_tracks([localAudioFiles[0],localAudioFiles[1],localAudioFiles[2]])
+        equalize_tracks([localAudioFiles[3],localAudioFiles[4]])
+        print "len(localAudioFiles)/5 after match: ", len(localAudioFiles)/5
+        loudnessMarkers = Main.findLoudestRegion([localAudioFiles[0].analysis.segments,
+            localAudioFiles[1].analysis.segments],
+            [localAudioFiles[0].analysis.tempo['value'],
+            localAudioFiles[1].analysis.tempo['value']])
+        beatMarkers = Main.getBeatMarkers(loudnessMarkers,
+            [localAudioFiles[0].analysis.segments,
+            localAudioFiles[1].analysis.segments],[localAudioFiles[0].analysis.beats,
+            localAudioFiles[1].analysis.beats])
+        mashComponents(localAudioFiles, beatMarkers)  
     
 if __name__ == '__main__':
     main()
